@@ -15,6 +15,7 @@
   *
   ******************************************************************************
   */
+//TODO: TESTAR TUDO
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -22,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include "pwmPidControl.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +37,15 @@
 #define PPR 1024 //encoder resolution in pulses per revolution
 #define MILISECONDS_TO_SECONDS 0.001
 #define RPM_TO_DEGREES_PER_SECOND 6
+
+//controller defines
+#define MAX_PWM 100
+#define MIN_PWM -100
+#define KP 0
+#define KI 0
+#define KD 0
+
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -55,9 +66,14 @@ uint32_t currentTick, lastTick;
 
 double setPoint = 20; //in RPM
 double pulsesSetPoint; //to be converted to encoder pulses
+double error;
 
 uint16_t dutyCycle;
 uint16_t pwmOutput;
+
+//CONTROL VARIABLES
+Pid controller;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -115,6 +131,9 @@ int main(void)
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_ALL);
   dutyCycle = HAL_TIM_ReadCapturedValue(&htim2, TIM_CHANNEL_1);
   HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+
+  //TODO: ajuste dos parâmetros do PID
+  pidInit(&controller, MIN_PWM, MAX_PWM, KP, KI, KD);
 
 
   HAL_TIM_Base_Start_IT(&htim2);
@@ -281,6 +300,7 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 0 */
 
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
@@ -288,11 +308,20 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
+  htim3.Init.Prescaler = 1;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 399;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
   {
     Error_Handler();
@@ -385,21 +414,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 
 		currentStep = TIM2->CNT;
-		//velocidade atual
+		//velocidade atual em pulsos
 		deltaSteps = currentStep - lastStep;
-
 
 		//debug
 		printf("TEMPO: %ld, ENCODER_STEP: %d, SETPOINT_PULSES: %f\n\r", (currentTick - lastTick), deltaSteps, pulsesSetPoint);
-		//TODO: biblioteca com o PID para uso da função para computá-lo
 
-		//TODO: ajuste dos parâmetros do PID, necessita do motor
-
+		//TYPECASTING PODE DAR PROBLEMA
+		dutyCycle += (uint16_t)computePwmValue(pulsesSetPoint, deltaSteps, &controller);
 
 		//atualização no PWM
-		//TODO: revisar fórmulas para encontrar valores bons de pwm
-		dutyCycle += pwmOutput;
-		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, dutyCycle);
+		//CCR EM 399 -> DUTY CYCLE 100%
+		//CCR EM 0 -> DUTY CYCLE 0%
+		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, dutyCycle);
 
 		//TODO: gerar gráficos para avaliar o resultado
 
