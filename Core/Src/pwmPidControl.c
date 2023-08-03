@@ -32,6 +32,5 @@ float computePwmValue(float setPoint, float feedBackValue, Pid* p){
     if(result > p->max) result = p->max;
     else if(result < p->min) result = p->min;
 
-
     return result;
 }

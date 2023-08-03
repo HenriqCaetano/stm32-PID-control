@@ -15,7 +15,7 @@
   *
   ******************************************************************************
   */
-//TODO: TESTAR TUDO
+//TODO: TESTES FISICOS
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -35,8 +35,12 @@
 /* USER CODE BEGIN PD */
 #define ONE_LAP 360 //360 degrees in one lap
 #define PPR 1024 //encoder resolution in pulses per revolution
-#define MILISECONDS_TO_SECONDS 0.001
-#define RPM_TO_DEGREES_PER_SECOND 6
+#define MOTOR_MAX_PULSES 70 //encoder pulses when motor @ 24V
+
+#define MILISECONDS_TO_SECONDS 0.001 //conversion
+#define RPM_TO_DEGREES_PER_SECOND 6 //conversion
+#define HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE 1/127
+
 
 //controller defines
 #define MAX_PWM 100
@@ -50,26 +54,23 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-int currentStep = 0, lastStep = 0, deltaSteps;
-uint32_t currentTick, lastTick;
+uint32_t currentStep = 0, lastStep = 0, deltaSteps; //stores encoder pulses
+uint32_t currentTick, lastTick; //stores clock ticks
 
 double setPoint = 20; //in RPM
-double pulsesSetPoint; //to be converted to encoder pulses
-double error;
+double pulsesSetPoint; //setPoint converted to encoder pulses
 
-uint16_t dutyCycle;
-uint16_t pwmOutput;
+uint32_t dutyCycle;
 
 //CONTROL VARIABLES
 Pid controller;
@@ -79,15 +80,21 @@ Pid controller;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
+//for data transmission using FTDI, requires USART 1 enabled
 int _write(int fd, char* ptr, int len) {
     HAL_UART_Transmit(&huart1, (uint8_t *) ptr, len, HAL_MAX_DELAY);
     return len;
 }
+
+void motorClockWise();
+void motorAntiClockWise();
+void motorStop();
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -123,20 +130,24 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_TIM1_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
-  MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_ALL);
-  dutyCycle = HAL_TIM_ReadCapturedValue(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_ALL); //starts PWM timer
+  dutyCycle = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_1); //initializes dutyCycle
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); //start timer in encoder mode
 
   //TODO: ajuste dos parâmetros do PID
   pidInit(&controller, MIN_PWM, MAX_PWM, KP, KI, KD);
 
+  HAL_GPIO_WritePin(GPIOA, ENABLE_Pin, GPIO_PIN_SET); //enable ON (required)
+  motorStop(); //motor initially stopped
 
-  HAL_TIM_Base_Start_IT(&htim2);
+  TIM4->CNT = 0;
+  TIM1->CCR1 = 20000; //100% PWM
+  HAL_TIM_Base_Start_IT(&htim2); //starts interrupt timer
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -162,10 +173,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -175,12 +189,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -198,8 +212,10 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 0 */
 
-  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
   /* USER CODE BEGIN TIM1_Init 1 */
 
@@ -210,17 +226,17 @@ static void MX_TIM1_Init(void)
   htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
-  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
-  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC1Filter = 0;
-  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
-  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
-  sConfig.IC2Filter = 0;
-  if (HAL_TIM_Encoder_Init(&htim1, &sConfig) != HAL_OK)
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -230,9 +246,31 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
 
 }
 
@@ -256,7 +294,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 100;
+  htim2.Init.Prescaler = 7200;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 800;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -289,61 +327,51 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief TIM3 Initialization Function
+  * @brief TIM4 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_TIM3_Init(void)
+static void MX_TIM4_Init(void)
 {
 
-  /* USER CODE BEGIN TIM3_Init 0 */
+  /* USER CODE BEGIN TIM4_Init 0 */
 
-  /* USER CODE END TIM3_Init 0 */
+  /* USER CODE END TIM4_Init 0 */
 
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_Encoder_InitTypeDef sConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
-  /* USER CODE BEGIN TIM3_Init 1 */
+  /* USER CODE BEGIN TIM4_Init 1 */
 
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 1;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 399;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim4, &sConfig) != HAL_OK)
   {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
+  /* USER CODE BEGIN TIM4_Init 2 */
 
-  /* USER CODE END TIM3_Init 2 */
-  HAL_TIM_MspPostInit(&htim3);
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
@@ -387,21 +415,33 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, ENABLE_Pin|IN_A_Pin|IN_B_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : ENABLE_Pin IN_A_Pin IN_B_Pin */
+  GPIO_InitStruct.Pin = ENABLE_Pin|IN_A_Pin|IN_B_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
 }
 
 /* USER CODE BEGIN 4 */
+//central control function
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 	if(htim == &htim2){
 		/*
 		 * ALGORITMO:
-		 * CONVERTER VELOCIDADE ALVO PARA PULSOS DE ENCODER
-		 * OBTER QUANTOS PULSOS OCORRERAM NA ULTIMA INTERRUPÇÃO
+		 * CONVERTER PWM ALVO PARA PULSOS DE ENCODER
+		 * OBTER QUANTOS PULSOS OCORRERAM NA ULTIMA INTERRUPÇÃO (velocidade atual)
 		 * PASSAR VELOCIDADE ATUAL E ALVO PARA A FUNÇÃO DE CÁLCULO DE PID
 		 * PASSAR O RESULTADO PARA O TIMER DE PWM
 		 * VERIFICAR RESULTADOS
@@ -410,30 +450,69 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		currentTick = HAL_GetTick();
 
 		//setPoint in RPM becomes encoder pulses
-		pulsesSetPoint = setPoint * RPM_TO_DEGREES_PER_SECOND * (currentTick - lastTick) * MILISECONDS_TO_SECONDS * ((float)PPR / (float)ONE_LAP);
+		//pulsesSetPoint = setPoint * RPM_TO_DEGREES_PER_SECOND * (currentTick - lastTick) * MILISECONDS_TO_SECONDS * ((float)PPR / (float)ONE_LAP); //RPM to pulses
 
+		//setPoint in PWM becomes encoder pulses
+		//pulsesSetPoint = -(setPoint-127) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (0-127)
+		//pulsesSetPoint = (setPoint - 129) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (129-255)
 
-		currentStep = TIM2->CNT;
-		//velocidade atual em pulsos
+		if(pulsesSetPoint > 0){
+			motorClockWise();
+		}
+		else if(pulsesSetPoint < 0){
+			motorAntiClockWise(); //TODO: analisar comportamento para velocidades no sentido anti-horário (negativas)
+		}
+		else motorStop();
+
+		currentStep = TIM4->CNT;
+
+		//current speed in pulses
 		deltaSteps = currentStep - lastStep;
 
-		//debug
-		printf("TEMPO: %ld, ENCODER_STEP: %d, SETPOINT_PULSES: %f\n\r", (currentTick - lastTick), deltaSteps, pulsesSetPoint);
 
 		//TYPECASTING PODE DAR PROBLEMA
-		dutyCycle += (uint16_t)computePwmValue(pulsesSetPoint, deltaSteps, &controller);
-
+		//dutyCycle += (uint32_t)computePwmValue(pulsesSetPoint, deltaSteps, &controller);
+		//debug
+		//printf("TEMPO: %ld, ENCODER_STEP: %d, SETPOINT_PULSES: %f\n\r, dutyCycle: %d", (currentTick - lastTick), deltaSteps, pulsesSetPoint, dutyCycle);
+		printf("TEMPO: %ld, ENCODER_STEP: %ld\n\r", (currentTick - lastTick), deltaSteps);
 		//atualização no PWM
 		//CCR EM 399 -> DUTY CYCLE 100%
 		//CCR EM 0 -> DUTY CYCLE 0%
-		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, dutyCycle);
-
+		//TIM3->CCR1 = dutyCycle;
 		//TODO: gerar gráficos para avaliar o resultado
 
 		//updates for next interruption
 		lastStep = currentStep;
 		lastTick = currentTick;
 	}
+}
+
+/**
+ * IN A: ON
+ * IN B: OFF
+ * */
+void motorClockWise(){
+	HAL_GPIO_WritePin(GPIOA, IN_A_Pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOA, IN_B_Pin, GPIO_PIN_RESET);
+}
+
+/**
+ * IN A: OFF
+ * IN B: ON
+ * */
+void motorAntiClockWise(){
+	HAL_GPIO_WritePin(GPIOA, IN_A_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, IN_B_Pin, GPIO_PIN_SET);
+}
+
+/**
+ * IN A: OFF
+ * IN B: OFF
+ * */
+//brakes to GND
+void motorStop(){
+	HAL_GPIO_WritePin(GPIOA, IN_A_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, IN_B_Pin, GPIO_PIN_RESET);
 }
 /* USER CODE END 4 */
 
