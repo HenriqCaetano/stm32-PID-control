@@ -65,10 +65,12 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 uint32_t currentStep = 0, lastStep = 0, deltaSteps; //stores encoder pulses
+float speedInPulses = 0;
+float pastTime = 0;
 uint32_t currentTick, lastTick; //stores clock ticks
 
 double setPoint = 20; //in RPM
-double pulsesSetPoint; //setPoint converted to encoder pulses
+double pulsesSetPoint = 500; //setPoint converted to encoder pulses
 
 uint32_t dutyCycle;
 
@@ -135,8 +137,10 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_ALL); //starts PWM timer
-  dutyCycle = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_1); //initializes dutyCycle
+
+
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); //starts PWM timer
+  dutyCycle = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_4); //initializes dutyCycle
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); //start timer in encoder mode
 
   //TODO: ajuste dos parâmetros do PID
@@ -145,8 +149,14 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, ENABLE_Pin, GPIO_PIN_SET); //enable ON (required)
   motorStop(); //motor initially stopped
 
+//  HAL_GPIO_WritePin(GPIOA, IN_A_Pin, GPIO_PIN_SET);
+//  HAL_GPIO_WritePin(GPIOA, IN_B_Pin, GPIO_PIN_RESET);
+
+  htim1.Instance->CCR4 = 174;
   TIM4->CNT = 0;
-  TIM1->CCR1 = 20000; //100% PWM
+  lastTick = HAL_GetTick();
+
+  //TIM1->CCR4 = 399; //100% PWM
   HAL_TIM_Base_Start_IT(&htim2); //starts interrupt timer
   /* USER CODE END 2 */
 
@@ -221,9 +231,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
+  htim1.Init.Prescaler = 9;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 699;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
@@ -449,9 +459,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 		currentTick = HAL_GetTick();
 
-		//setPoint in RPM becomes encoder pulses
-		//pulsesSetPoint = setPoint * RPM_TO_DEGREES_PER_SECOND * (currentTick - lastTick) * MILISECONDS_TO_SECONDS * ((float)PPR / (float)ONE_LAP); //RPM to pulses
-
 		//setPoint in PWM becomes encoder pulses
 		//pulsesSetPoint = -(setPoint-127) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (0-127)
 		//pulsesSetPoint = (setPoint - 129) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (129-255)
@@ -469,17 +476,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		//current speed in pulses
 		deltaSteps = currentStep - lastStep;
 
-
+		speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; //multiplies by 1000 for ms to s
+		pastTime += (float)(currentTick - lastTick) / 1000;
 		//TYPECASTING PODE DAR PROBLEMA
 		//dutyCycle += (uint32_t)computePwmValue(pulsesSetPoint, deltaSteps, &controller);
 		//debug
 		//printf("TEMPO: %ld, ENCODER_STEP: %d, SETPOINT_PULSES: %f\n\r, dutyCycle: %d", (currentTick - lastTick), deltaSteps, pulsesSetPoint, dutyCycle);
-		printf("TEMPO: %ld, ENCODER_STEP: %ld\n\r", (currentTick - lastTick), deltaSteps);
+		//printf("TEMPO: %ld, ENCODER_STEP: %ld, SPEED_PULSE: %f \n\r", (currentTick - lastTick), deltaSteps, speedInPulses);
 		//atualização no PWM
 		//CCR EM 399 -> DUTY CYCLE 100%
 		//CCR EM 0 -> DUTY CYCLE 0%
 		//TIM3->CCR1 = dutyCycle;
 		//TODO: gerar gráficos para avaliar o resultado
+		printf("%f %f\n", speedInPulses, pastTime);
 
 		//updates for next interruption
 		lastStep = currentStep;
