@@ -45,8 +45,8 @@
 //controller defines
 #define MAX_PWM 100
 #define MIN_PWM -100
-#define KP 0
-#define KI 0
+#define KP 0.5
+#define KI 1
 #define KD 0
 
 
@@ -67,15 +67,16 @@ UART_HandleTypeDef huart1;
 uint32_t currentStep = 0, lastStep = 0, deltaSteps; //stores encoder pulses
 float speedInPulses = 0;
 float pastTime = 0;
-uint32_t currentTick, lastTick; //stores clock ticks
+uint32_t currentTick, lastTick = 0; //stores clock ticks
 
-double setPoint = 20; //in RPM
-double pulsesSetPoint = 500; //setPoint converted to encoder pulses
-
-uint32_t dutyCycle;
 
 //CONTROL VARIABLES
 Pid controller;
+float duty = 0;
+float aux;
+float pulsesSetPoint = 561.6321; //setPoint in pulses/s
+
+float result = 0;
 
 /* USER CODE END PV */
 
@@ -140,7 +141,7 @@ int main(void)
 
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); //starts PWM timer
-  dutyCycle = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_4); //initializes dutyCycle
+  //dutyCycle = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_4); //initializes dutyCycle
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); //start timer in encoder mode
 
   //TODO: ajuste dos parâmetros do PID
@@ -152,11 +153,10 @@ int main(void)
 //  HAL_GPIO_WritePin(GPIOA, IN_A_Pin, GPIO_PIN_SET);
 //  HAL_GPIO_WritePin(GPIOA, IN_B_Pin, GPIO_PIN_RESET);
 
-  htim1.Instance->CCR4 = 174;
+  htim1.Instance->CCR4 = 0;
   TIM4->CNT = 0;
-  lastTick = HAL_GetTick();
 
-  //TIM1->CCR4 = 399; //100% PWM
+
   HAL_TIM_Base_Start_IT(&htim2); //starts interrupt timer
   /* USER CODE END 2 */
 
@@ -458,7 +458,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		 * */
 
 		currentTick = HAL_GetTick();
-
 		//setPoint in PWM becomes encoder pulses
 		//pulsesSetPoint = -(setPoint-127) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (0-127)
 		//pulsesSetPoint = (setPoint - 129) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (129-255)
@@ -475,26 +474,37 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 		//current speed in pulses
 		deltaSteps = currentStep - lastStep;
+		if(currentTick - lastTick != 0){ //evitar divisoes estranhas
 
-		speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; //multiplies by 1000 for ms to s
-		pastTime += (float)(currentTick - lastTick) / 1000;
-		//TYPECASTING PODE DAR PROBLEMA
-		//dutyCycle += (uint32_t)computePwmValue(pulsesSetPoint, deltaSteps, &controller);
-		//debug
-		//printf("TEMPO: %ld, ENCODER_STEP: %d, SETPOINT_PULSES: %f\n\r, dutyCycle: %d", (currentTick - lastTick), deltaSteps, pulsesSetPoint, dutyCycle);
-		//printf("TEMPO: %ld, ENCODER_STEP: %ld, SPEED_PULSE: %f \n\r", (currentTick - lastTick), deltaSteps, speedInPulses);
-		//atualização no PWM
-		//CCR EM 399 -> DUTY CYCLE 100%
-		//CCR EM 0 -> DUTY CYCLE 0%
-		//TIM3->CCR1 = dutyCycle;
-		//TODO: gerar gráficos para avaliar o resultado
-		printf("%f %f\n", speedInPulses, pastTime);
+			speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; //multiplies by 1000 for ms to s
+			pastTime += (float)(currentTick - lastTick) / 1000; //tempo decorrido em segundos
 
+			if(pastTime > 20){ //espera 20 segundos antes de mudar o controle
+				pulsesSetPoint = 877.5681;
+			}
+
+			duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller);
+			if(duty > 699){
+				duty = 699;
+			}
+			else if(duty < 0){
+				duty = 0;
+			}
+			//atualização no PWM
+			//CCR EM 699 -> DUTY CYCLE 100%
+			//CCR EM 0 -> DUTY CYCLE 0%
+			TIM1->CCR4 = duty;
+
+//			printf("PWM: %ld dutyCycle: %f\r\n", TIM1->CCR4, duty);
+			printf("%f %f\n", speedInPulses, pastTime); //formatted for python script (graphic)
+
+		}
 		//updates for next interruption
 		lastStep = currentStep;
 		lastTick = currentTick;
 	}
 }
+
 
 /**
  * IN A: ON

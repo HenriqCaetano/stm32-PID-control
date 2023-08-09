@@ -1,6 +1,6 @@
 #include "pwmPidControl.h"
 
-
+#include <stdio.h>
 
 //the min and max values should consider the duty cycle %
 //example: if the minValue is 10% duty cycle, the minimalPwm must be a value that reflects it
@@ -23,14 +23,15 @@ float computePwmValue(float setPoint, float feedBackValue, Pid* p){
     p->error = setPoint - feedBackValue; //get current error
     p->integralValue += p->error; //update integralError
 
-    float result;
-
+    float result = 0;
     //calculate pwm output
-    result = p->kp * p->error + p->ki * p->integralValue + p->kd * (pastError - p->error);
+    result = p->kp * p->error; + p->ki * p->integralValue + p->kd * (pastError - p->error);
 
     //deals with limit values
     if(result > p->max) result = p->max;
     else if(result < p->min) result = p->min;
 
+    //printf("%f\r\n", result);
     return result;
+
 }
