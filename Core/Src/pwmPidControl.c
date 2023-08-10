@@ -20,6 +20,11 @@ void pidInit(Pid* p, float minimalPwm, float maximumPwm, float kp, float ki, flo
 /// @return increment to PWM
 float computePwmValue(float setPoint, float feedBackValue, Pid* p){
     float pastError = p->error;
+
+
+    if(setPoint < 0) setPoint *= -1;
+    if (feedBackValue < 0) feedBackValue *= -1;
+
     p->error = setPoint - feedBackValue; //get current error
     p->integralValue += p->error; //update integralError
 

@@ -15,7 +15,6 @@
   *
   ******************************************************************************
   */
-//TODO: TESTES FISICOS
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -64,20 +63,16 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-uint32_t currentStep = 0, lastStep = 0, deltaSteps; //stores encoder pulses
-float speedInPulses = 0;
-float pastTime = 0;
+int currentStep = 0, lastStep = 0, deltaSteps = 0; //stores encoder pulses
+float speedInPulses = 0; //speed in pulses / s
+float pastTime = 0; //time since application started TODO: remove!
 uint32_t currentTick, lastTick = 0; //stores clock ticks
 
 
 //CONTROL VARIABLES
 Pid controller;
-float duty = 0;
-float aux;
-float pulsesSetPoint = 561.6321; //setPoint in pulses/s
-
-float result = 0;
-
+float duty = 0; //for floating point operations
+float pulsesSetPoint = -239.2998; //setPoint in pulses/s
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,10 +89,14 @@ int _write(int fd, char* ptr, int len) {
     return len;
 }
 
+// driver logic config so motor goes clockwise
 void motorClockWise();
-void motorAntiClockWise();
-void motorStop();
 
+// driver logic config so motor goes counter-clockwise
+void motorAntiClockWise();
+
+// driver logic config so motor stops
+void motorStop();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -141,21 +140,15 @@ int main(void)
 
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); //starts PWM timer
-  //dutyCycle = HAL_TIM_ReadCapturedValue(&htim1, TIM_CHANNEL_4); //initializes dutyCycle
-  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); //start timer in encoder mode
+  HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); //starts encoder timer
 
-  //TODO: ajuste dos parâmetros do PID
-  pidInit(&controller, MIN_PWM, MAX_PWM, KP, KI, KD);
+  pidInit(&controller, MIN_PWM, MAX_PWM, KP, KI, KD); //starts PID controller
 
   HAL_GPIO_WritePin(GPIOA, ENABLE_Pin, GPIO_PIN_SET); //enable ON (required)
   motorStop(); //motor initially stopped
 
-//  HAL_GPIO_WritePin(GPIOA, IN_A_Pin, GPIO_PIN_SET);
-//  HAL_GPIO_WritePin(GPIOA, IN_B_Pin, GPIO_PIN_RESET);
-
-  htim1.Instance->CCR4 = 0;
-  TIM4->CNT = 0;
-
+  htim1.Instance->CCR4 = 0; //PWM timer inittialy 0
+  TIM4->CNT = 0; //encoder timer inittialy 0
 
   HAL_TIM_Base_Start_IT(&htim2); //starts interrupt timer
   /* USER CODE END 2 */
@@ -445,66 +438,84 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
 //central control function
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 	if(htim == &htim2){
-		/*
-		 * ALGORITMO:
-		 * CONVERTER PWM ALVO PARA PULSOS DE ENCODER
-		 * OBTER QUANTOS PULSOS OCORRERAM NA ULTIMA INTERRUPÇÃO (velocidade atual)
-		 * PASSAR VELOCIDADE ATUAL E ALVO PARA A FUNÇÃO DE CÁLCULO DE PID
-		 * PASSAR O RESULTADO PARA O TIMER DE PWM
-		 * VERIFICAR RESULTADOS
-		 * */
 
 		currentTick = HAL_GetTick();
-		//setPoint in PWM becomes encoder pulses
-		//pulsesSetPoint = -(setPoint-127) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (0-127)
-		//pulsesSetPoint = (setPoint - 129) * (float)HIGH_LEVEL_INPUT_TO_PWM_PERCENTAGE * MOTOR_MAX_PULSES; //high-level input to pulses (129-255)
 
+		//clockWise movement
 		if(pulsesSetPoint > 0){
 			motorClockWise();
+			currentStep = TIM4->CNT;
+
+			deltaSteps = currentStep - lastStep; //current distance in pulses
+			if(deltaSteps < 0) deltaSteps += 65535; //accounts for overflow
+
+			if(currentTick - lastTick != 0){ //avoid division errors
+
+				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s
+				pastTime += (float)(currentTick - lastTick) / 1000;
+
+				duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
+
+				//considers CCR limits
+				if(duty > 699) duty = 699;
+				else if(duty < 0) duty = 0;
+
+				//CCR in 699 -> DUTY CYCLE 100%
+				//CCR in 0 -> DUTY CYCLE 0%
+				//configurable in .ioc
+				TIM1->CCR4 = duty; //updates pwm
+			}
 		}
+		//antiClockWise movement
 		else if(pulsesSetPoint < 0){
-			motorAntiClockWise(); //TODO: analisar comportamento para velocidades no sentido anti-horário (negativas)
+			motorAntiClockWise();
+
+			currentStep = TIM4->CNT;
+
+			deltaSteps = currentStep - lastStep; //current distance in pulses (will be negative!)
+			if(deltaSteps > 0) deltaSteps -= 65535; //accounts for overflow
+
+			if(currentTick - lastTick != 0){ //avoid division errors
+
+				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s (will be negative!)
+				pastTime += (float)(currentTick - lastTick) / 1000;
+
+//				if(pastTime > 15) pulsesSetPoint = -877.5681; //debug for PID testing
+
+				duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
+
+				//considers CCR limits
+				if(duty > 699) duty = 699;
+				else if(duty < 0) duty = 0;
+
+				//CCR in 699 -> DUTY CYCLE 100%
+				//CCR in 0 -> DUTY CYCLE 0%
+				//configurable in .ioc
+				TIM1->CCR4 = duty; //updates pwm
+			}
 		}
-		else motorStop();
-
-		currentStep = TIM4->CNT;
-
-		//current speed in pulses
-		deltaSteps = currentStep - lastStep;
-		if(currentTick - lastTick != 0){ //evitar divisoes estranhas
-
-			speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; //multiplies by 1000 for ms to s
-			pastTime += (float)(currentTick - lastTick) / 1000; //tempo decorrido em segundos
-
-			if(pastTime > 20){ //espera 20 segundos antes de mudar o controle
-				pulsesSetPoint = 877.5681;
-			}
-
-			duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller);
-			if(duty > 699){
-				duty = 699;
-			}
-			else if(duty < 0){
-				duty = 0;
-			}
-			//atualização no PWM
-			//CCR EM 699 -> DUTY CYCLE 100%
-			//CCR EM 0 -> DUTY CYCLE 0%
-			TIM1->CCR4 = duty;
-
-//			printf("PWM: %ld dutyCycle: %f\r\n", TIM1->CCR4, duty);
-			printf("%f %f\n", speedInPulses, pastTime); //formatted for python script (graphic)
-
+		//no movement
+		else {
+			motorStop();
+			TIM1->CCR4 = 0; //0% dutyCycle
+			duty = 0; //avoids biasing next motor speed
 		}
-		//updates for next interruption
+
+//		debug printing
+//		printf("counter: %ld step: %d\r\n", TIM4->CNT, deltaSteps); //timer counter and step in pulses
+//		printf("PWM: %ld dutyCycle: %f\r\n", TIM1->CCR4, duty); //pwm register and dutyCycle floating point
+//		printf("%f %f\n", speedInPulses, pastTime); //speed and time formatted for python script (graphic)
+		printf("%ld\r\n", currentTick - lastTick); //time between interrupts
+
+		//updates for next iteration
 		lastStep = currentStep;
 		lastTick = currentTick;
 	}
 }
-
 
 /**
  * IN A: ON
