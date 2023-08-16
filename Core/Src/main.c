@@ -48,6 +48,8 @@
 #define KI 1
 #define KD 0
 
+#define STEP_BUFFER_SIZE 10
+
 
 /* USER CODE END PD */
 
@@ -69,10 +71,15 @@ float pastTime = 0; //time since application started TODO: remove!
 uint32_t currentTick, lastTick = 0; //stores clock ticks
 
 
+int stepBuffer[STEP_BUFFER_SIZE];
+int i, j;
+float auxSum = 0;
+
+
 //CONTROL VARIABLES
 Pid controller;
 float duty = 0; //for floating point operations
-float pulsesSetPoint = -239.2998; //setPoint in pulses/s
+float pulsesSetPoint = 0; //setPoint in pulses/s
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -149,6 +156,14 @@ int main(void)
 
   htim1.Instance->CCR4 = 0; //PWM timer inittialy 0
   TIM4->CNT = 0; //encoder timer inittialy 0
+
+
+  for(i= 0; i< STEP_BUFFER_SIZE; i++){
+	  stepBuffer[i] = 0;
+  }
+
+ i=0;
+
 
   HAL_TIM_Base_Start_IT(&htim2); //starts interrupt timer
   /* USER CODE END 2 */
@@ -297,9 +312,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 7200;
+  htim2.Init.Prescaler = 1000;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 800;
+  htim2.Init.Period = 720;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -445,18 +460,36 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 		currentTick = HAL_GetTick();
 
+
+		currentStep = TIM4->CNT;
+
+		deltaSteps = currentStep - lastStep; //current distance in pulses
+
+		if(i >= 10) i=0; //accounts for buffer overflow
+
 		//clockWise movement
 		if(pulsesSetPoint > 0){
 			motorClockWise();
-			currentStep = TIM4->CNT;
 
-			deltaSteps = currentStep - lastStep; //current distance in pulses
 			if(deltaSteps < 0) deltaSteps += 65535; //accounts for overflow
+			stepBuffer[i] = deltaSteps;
+			i++;
 
 			if(currentTick - lastTick != 0){ //avoid division errors
 
-				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s
+//				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s
+				for(j=0; j< STEP_BUFFER_SIZE; j++){
+					auxSum += stepBuffer[j];
+				}
+
+				auxSum /= STEP_BUFFER_SIZE;
+
+				speedInPulses = (auxSum / 10) * 1000; // current speed in pulses / s
+
 				pastTime += (float)(currentTick - lastTick) / 1000;
+
+				if(pastTime > 5) pulsesSetPoint = 1168.7886; //debug for PID testing
+
 
 				duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
 
@@ -474,17 +507,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		else if(pulsesSetPoint < 0){
 			motorAntiClockWise();
 
-			currentStep = TIM4->CNT;
-
-			deltaSteps = currentStep - lastStep; //current distance in pulses (will be negative!)
 			if(deltaSteps > 0) deltaSteps -= 65535; //accounts for overflow
+
+			stepBuffer[i] = deltaSteps;
+			i++;
 
 			if(currentTick - lastTick != 0){ //avoid division errors
 
 				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s (will be negative!)
 				pastTime += (float)(currentTick - lastTick) / 1000;
 
-//				if(pastTime > 15) pulsesSetPoint = -877.5681; //debug for PID testing
+				if(pastTime > 5) pulsesSetPoint = 1168.7886; //debug for PID testing
 
 				duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
 
@@ -503,17 +536,28 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 			motorStop();
 			TIM1->CCR4 = 0; //0% dutyCycle
 			duty = 0; //avoids biasing next motor speed
+
+			stepBuffer[i] = deltaSteps;
+			i++;
+
+			speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s
+			pastTime += (float)(currentTick - lastTick) / 1000;
+
+			if(pastTime > 5) pulsesSetPoint = 1168.7886; //debug for PID testing
 		}
 
 //		debug printing
 //		printf("counter: %ld step: %d\r\n", TIM4->CNT, deltaSteps); //timer counter and step in pulses
 //		printf("PWM: %ld dutyCycle: %f\r\n", TIM1->CCR4, duty); //pwm register and dutyCycle floating point
-//		printf("%f %f\n", speedInPulses, pastTime); //speed and time formatted for python script (graphic)
-		printf("%ld\r\n", currentTick - lastTick); //time between interrupts
+		printf("%f %f\n\r", speedInPulses, pastTime); //speed and time formatted for python script (graphic)
+//		printf("%ld\r\n", currentTick - lastTick); //time between interrupts
+//		printf("%f \n\r", auxSum);
 
 		//updates for next iteration
 		lastStep = currentStep;
 		lastTick = currentTick;
+
+		auxSum = 0;
 	}
 }
 
