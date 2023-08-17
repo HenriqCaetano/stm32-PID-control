@@ -44,8 +44,8 @@
 //controller defines
 #define MAX_PWM 100
 #define MIN_PWM -100
-#define KP 0.5
-#define KI 1
+#define KP 0.05
+#define KI 10
 #define KD 0
 
 #define STEP_BUFFER_SIZE 10
@@ -65,7 +65,7 @@ TIM_HandleTypeDef htim4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-int currentStep = 0, lastStep = 0, deltaSteps = 0; //stores encoder pulses
+int currentStep = 0; //stores encoder pulses
 float speedInPulses = 0; //speed in pulses / s
 float pastTime = 0; //time since application started TODO: remove!
 uint32_t currentTick, lastTick = 0; //stores clock ticks
@@ -460,104 +460,66 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 		currentTick = HAL_GetTick();
 
-
 		currentStep = TIM4->CNT;
+		TIM4->CNT = 0;
 
-		deltaSteps = currentStep - lastStep; //current distance in pulses
+		pastTime += (float)(currentTick - lastTick) / 1000;
 
-		if(i >= 10) i=0; //accounts for buffer overflow
+		if(pastTime > 5) pulsesSetPoint = -900;
+//		else if(pastTime > 5) pulsesSetPoint = 900; //debug for PID testing
 
+
+		//dealing with different kinds of movement
 		//clockWise movement
 		if(pulsesSetPoint > 0){
 			motorClockWise();
-
-			if(deltaSteps < 0) deltaSteps += 65535; //accounts for overflow
-			stepBuffer[i] = deltaSteps;
-			i++;
-
-			if(currentTick - lastTick != 0){ //avoid division errors
-
-//				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s
-				for(j=0; j< STEP_BUFFER_SIZE; j++){
-					auxSum += stepBuffer[j];
-				}
-
-				auxSum /= STEP_BUFFER_SIZE;
-
-				speedInPulses = (auxSum / 10) * 1000; // current speed in pulses / s
-
-				pastTime += (float)(currentTick - lastTick) / 1000;
-
-				if(pastTime > 5) pulsesSetPoint = 1168.7886; //debug for PID testing
-
-
-				duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
-
-				//considers CCR limits
-				if(duty > 699) duty = 699;
-				else if(duty < 0) duty = 0;
-
-				//CCR in 699 -> DUTY CYCLE 100%
-				//CCR in 0 -> DUTY CYCLE 0%
-				//configurable in .ioc
-				TIM1->CCR4 = duty; //updates pwm
-			}
 		}
 		//antiClockWise movement
 		else if(pulsesSetPoint < 0){
 			motorAntiClockWise();
-
-			if(deltaSteps > 0) deltaSteps -= 65535; //accounts for overflow
-
-			stepBuffer[i] = deltaSteps;
-			i++;
-
-			if(currentTick - lastTick != 0){ //avoid division errors
-
-				speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s (will be negative!)
-				pastTime += (float)(currentTick - lastTick) / 1000;
-
-				if(pastTime > 5) pulsesSetPoint = 1168.7886; //debug for PID testing
-
-				duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
-
-				//considers CCR limits
-				if(duty > 699) duty = 699;
-				else if(duty < 0) duty = 0;
-
-				//CCR in 699 -> DUTY CYCLE 100%
-				//CCR in 0 -> DUTY CYCLE 0%
-				//configurable in .ioc
-				TIM1->CCR4 = duty; //updates pwm
-			}
+			currentStep -= 65535; //considera movimento em sentido anti-horário
 		}
 		//no movement
 		else {
 			motorStop();
 			TIM1->CCR4 = 0; //0% dutyCycle
 			duty = 0; //avoids biasing next motor speed
+		}
 
-			stepBuffer[i] = deltaSteps;
+		if(i >= 10) i=0; //creates queue structure in the buffer
+		//CONTROLLER
+		if(currentTick - lastTick != 0){ //avoid division errors
+
+			stepBuffer[i] = currentStep;
 			i++;
 
-			speedInPulses = ((float)deltaSteps / (float)(currentTick - lastTick)) * 1000; // current speed in pulses / s
-			pastTime += (float)(currentTick - lastTick) / 1000;
+			for(j=0; j< STEP_BUFFER_SIZE; j++) auxSum += stepBuffer[j];
+			auxSum /= STEP_BUFFER_SIZE;
 
-			if(pastTime > 5) pulsesSetPoint = 1168.7886; //debug for PID testing
+			speedInPulses = auxSum * 100; // current speed in pulses / s
+			duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
+
+			//considers CCR limits
+			if(duty > 699) duty = 699;
+			else if(duty < 0) duty = 0;
+
+			//CCR in 699 -> DUTY CYCLE 100%
+			//CCR in 0 -> DUTY CYCLE 0%
+			//configurable in .ioc
+			TIM1->CCR4 = duty; //updates pwm
 		}
 
 //		debug printing
 //		printf("counter: %ld step: %d\r\n", TIM4->CNT, deltaSteps); //timer counter and step in pulses
-//		printf("PWM: %ld dutyCycle: %f\r\n", TIM1->CCR4, duty); //pwm register and dutyCycle floating point
+//		printf("PWM: %ld\r\n", TIM1->CCR4); //pwm register
 		printf("%f %f\n\r", speedInPulses, pastTime); //speed and time formatted for python script (graphic)
 //		printf("%ld\r\n", currentTick - lastTick); //time between interrupts
 //		printf("%f \n\r", auxSum);
 
 		//updates for next iteration
-		lastStep = currentStep;
-		lastTick = currentTick;
-
 		auxSum = 0;
+		currentStep = 0;
+		lastTick = currentTick;
 	}
 }
 
