@@ -49,6 +49,7 @@
 #define KD 0
 
 #define STEP_BUFFER_SIZE 10
+#define TIMER_INIT_VALUE 30000 //this way, there is no need to deal with overflow
 
 
 /* USER CODE END PD */
@@ -158,12 +159,10 @@ int main(void)
   TIM4->CNT = 0; //encoder timer inittialy 0
 
 
-  for(i= 0; i< STEP_BUFFER_SIZE; i++){
-	  stepBuffer[i] = 0;
-  }
+  for(i= 0; i< STEP_BUFFER_SIZE; i++) stepBuffer[i] = 0;
+  i=0;
 
- i=0;
-
+  TIM4->CNT = TIMER_INIT_VALUE;
 
   HAL_TIM_Base_Start_IT(&htim2); //starts interrupt timer
   /* USER CODE END 2 */
@@ -454,14 +453,14 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-//central control function
+//control interrupt
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 	if(htim == &htim2){
 
 		currentTick = HAL_GetTick();
 
-		currentStep = TIM4->CNT;
-		TIM4->CNT = 0;
+		currentStep = TIM4->CNT - TIMER_INIT_VALUE;
+		TIM4->CNT = TIMER_INIT_VALUE;
 
 		pastTime += (float)(currentTick - lastTick) / 1000;
 
@@ -471,13 +470,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 		//dealing with different kinds of movement
 		//clockWise movement
-		if(pulsesSetPoint > 0){
-			motorClockWise();
-		}
-		//antiClockWise movement
+		if(pulsesSetPoint > 0) motorClockWise();
+
+		//antiClockWise movement TODO: TESTES AQUI!
 		else if(pulsesSetPoint < 0){
 			motorAntiClockWise();
-			currentStep -= 65535; //considera movimento em sentido anti-horário
 		}
 		//no movement
 		else {
@@ -487,6 +484,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		}
 
 		if(i >= 10) i=0; //creates queue structure in the buffer
+
 		//CONTROLLER
 		if(currentTick - lastTick != 0){ //avoid division errors
 
@@ -510,7 +508,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		}
 
 //		debug printing
-//		printf("counter: %ld step: %d\r\n", TIM4->CNT, deltaSteps); //timer counter and step in pulses
+//		printf("currentStep: %d setPoint: %f\r\n", currentStep, pulsesSetPoint); //encoder step and setPoint
 //		printf("PWM: %ld\r\n", TIM1->CCR4); //pwm register
 		printf("%f %f\n\r", speedInPulses, pastTime); //speed and time formatted for python script (graphic)
 //		printf("%ld\r\n", currentTick - lastTick); //time between interrupts
