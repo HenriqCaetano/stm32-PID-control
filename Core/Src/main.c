@@ -457,25 +457,26 @@ static void MX_GPIO_Init(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 	if(htim == &htim2){
 
-		currentTick = HAL_GetTick();
+		currentTick = HAL_GetTick(); //para contar o tempo decorrido (gerar gráfico)
 
 		currentStep = TIM4->CNT - TIMER_INIT_VALUE;
 		TIM4->CNT = TIMER_INIT_VALUE;
 
 		pastTime += (float)(currentTick - lastTick) / 1000;
 
-		if(pastTime > 5) pulsesSetPoint = -900;
-//		else if(pastTime > 5) pulsesSetPoint = 900; //debug for PID testing
+		/*Testes de velocidade*/
+		if(pastTime > 25) pulsesSetPoint = 0;
+		else if(pastTime > 20) pulsesSetPoint = -700;
+		else if(pastTime > 15) pulsesSetPoint = 0;
+		else if(pastTime > 10) pulsesSetPoint = -800;
+		else if(pastTime > 5) pulsesSetPoint = 700;
 
 
 		//dealing with different kinds of movement
-		//clockWise movement
 		if(pulsesSetPoint > 0) motorClockWise();
 
 		//antiClockWise movement TODO: TESTES AQUI!
-		else if(pulsesSetPoint < 0){
-			motorAntiClockWise();
-		}
+		else if(pulsesSetPoint < 0) motorAntiClockWise();
 		//no movement
 		else {
 			motorStop();
@@ -486,26 +487,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 		if(i >= 10) i=0; //creates queue structure in the buffer
 
 		//CONTROLLER
-		if(currentTick - lastTick != 0){ //avoid division errors
+		stepBuffer[i] = currentStep;
+		i++;
 
-			stepBuffer[i] = currentStep;
-			i++;
+		for(j=0; j< STEP_BUFFER_SIZE; j++) auxSum += stepBuffer[j];
+		auxSum /= STEP_BUFFER_SIZE;
 
-			for(j=0; j< STEP_BUFFER_SIZE; j++) auxSum += stepBuffer[j];
-			auxSum /= STEP_BUFFER_SIZE;
+		speedInPulses = auxSum * 100; // current speed in pulses / s
+		duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
 
-			speedInPulses = auxSum * 100; // current speed in pulses / s
-			duty += computePwmValue(pulsesSetPoint, speedInPulses, &controller); //gets pwm variation in floating point
+		//considers CCR limits
+		if(duty > 699) duty = 699;
+		else if(duty < 0) duty = 0;
 
-			//considers CCR limits
-			if(duty > 699) duty = 699;
-			else if(duty < 0) duty = 0;
-
-			//CCR in 699 -> DUTY CYCLE 100%
-			//CCR in 0 -> DUTY CYCLE 0%
-			//configurable in .ioc
-			TIM1->CCR4 = duty; //updates pwm
-		}
+		//CCR in 699 -> DUTY CYCLE 100%
+		//CCR in 0 -> DUTY CYCLE 0%
+		//configurable in .ioc
+		TIM1->CCR4 = duty; //updates pwm
 
 //		debug printing
 //		printf("currentStep: %d setPoint: %f\r\n", currentStep, pulsesSetPoint); //encoder step and setPoint
@@ -516,7 +514,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim){
 
 		//updates for next iteration
 		auxSum = 0;
-		currentStep = 0;
 		lastTick = currentTick;
 	}
 }
